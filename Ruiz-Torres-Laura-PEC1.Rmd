@@ -1,0 +1,159 @@
+---
+title: "Análisis de datos ómicos"
+author: "Laura Ruiz Torres"
+date: "2025-04-02"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+subtitle: PEC1
+---
+
+# Abstract
+-copiado
+Cachexia is a complex metabolic syndrome associated with an underlying illness (such as cancer) and characterized by loss of muscle with or without loss of fat mass (Evans et al., 2008). A total of 77 urine samples were collected being 47 of them patients with cachexia, and 30 control patients (from the "specmine.datasets" R package)
+
+# Objetivos
+
+
+# Métodos y Resultados
+
+##### Consideraciones previas
+
+El análisis del dataset se ha realizado en la versión de R 4.3.2. 
+
+El dataset metabolómico elegido se ha obtenido desde del enlace de Github proporcionado para realizar la actividad. Este contiene datos sobre metabolitos relacionados con la caquexia
+
+##### Generación del objeto SummarizedExperiment
+
+En primer lugar se ha cargado el csv con los datos de metaboloma.
+
+```{r}
+# Librerías
+library(readr)
+library(SummarizedExperiment)
+
+# Cargar el dataset
+csv_cachexia <- read_csv("human_cachexia.csv")
+head(csv_cachexia)
+```
+Con solo cargar el dataset ya tenemos una idea de los datos que contiene, hay 77 filas y 65 columnas diferentes. La primera columna "Patient ID" corresponde al código de la muestra, y la segunda columna "Muscle loss" al estado del paciente, es decir si presenta caquexia o no. A los que no presentan caquexia, los consideramos individuos control. El resto de columnas son todos los valores numéricos de los metabolitos presentes y estudiados. 
+
+
+Estos metabolitos van a dar lugar a una matriz. Al estudiar la información referente al paquete, se ha podido observar que, los pacientes deben ir en columnas y los metabolitos en las filas, al contrario de como tenemos el dataset cargado inicialmente. Para solucionar este problema se traspone la matriz.
+
+```{r}
+# Matriz
+matriz <- t(as.matrix(csv_cachexia[, -c(1, 2)])) # se le da la vuelta a las filas y a las columnas
+rownames(matriz) <- colnames(csv_cachexia[, -c(1, 2)]) # metabolitos
+colnames(matriz) <- csv_cachexia$`Patient ID` # pacientes
+```
+
+Para continuar con los pasos a seguir, se genera un dataframe con el código de los pacientes y a qué grupo pertenecen, si a caquéxia o a control. A este dataframe le vamos a dar el nombre col_data por mantener, de alguna manera, la coherencia con la nomenclatura que se suele utilizar y para que sea más intuitivo construir el SummarizedExperiment posteriormente.
+
+```{r}
+# Dataframe
+col_data <- DataFrame(
+  Patient_ID = csv_cachexia$`Patient ID`,
+  Muscle_loss = csv_cachexia$`Muscle loss`
+)
+rownames(col_data) <- col_data$Patient_ID # asignar el nombre a las filas
+```
+
+Se genera otro dataframe con la información referente a los metabolitos.
+
+```{r}
+# Dataframe
+row_data <- DataFrame(
+  Metabolite = rownames(matriz) 
+)
+rownames(row_data) <- row_data$Metabolite
+```
+
+En este paso se construye el objeto SummarizedExperiment con la función del mismo nombre
+
+```{r}
+sumexp <- SummarizedExperiment(
+  assays = list(Expresion = matriz),
+  colData = DataFrame(col_data),
+  rowData = DataFrame(row_data)
+)
+```
+
+```{r}
+# Comprobaciones
+sumexp
+
+colData(sumexp)
+rowData(sumexp)
+```
+
+El objeto SummarizedExperiment tiene algunas diferencias frente a un ExpressionSet, uno de los más notables es que el primero está hecho para ómicas variadas, de metabolitos, ARN... mientras que el segundo se limita a datos de expresión génica. El acceso a los datos es diferente, mientras que en el primero se utiliza rowData() o colData(), en el segundo se usa fData() o pData().
+
+
+##### Análisis exploratorio
+
+El análisis exploratorio de los datos se puede realizar desde diversos puntos de vista y hay múltiples formas de representarlo.
+
+```{r}
+# dimensiones
+dim(sumexp) 
+```
+
+A partir de esto sabemos que el objeto tiene 63 filas y 77 columnas. Por lo tanto el estudio ha contado 63 metabolitos y 77 pacientes.
+
+Podemos ver qué metabolitos están más representados en las muestras, y para ello se va a realizar un gráfico boxplot con los 10 más abundantes. 
+
+```{r}
+library(reshape2)
+library(ggplot2)
+
+media_abund <- rowMeans(assay(sumexp, "Expresion")) # cálculo de la abundancia media por meteabolito
+
+abund_10 <- names(sort(media_abund, decreasing = TRUE))[1:10] # orden  metabolitos
+matriz_10 <- assay(sumexp, "Expresion")[abund_10, ]
+
+matriz_10_long <- melt(matriz_10) 
+colnames(matriz_10_long) <- c("Metabolito", "Paciente", "Concentración")
+
+# boxplot 
+ggplot(matriz_10_long, aes(x = Metabolito, y = Concentración)) +
+  geom_boxplot(outlier.color = "lightblue", outlier.shape = 16) + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8)) + 
+  labs(title = "Metabolitos más abundantes", 
+       x = "Metabolito", y = "Concentración")
+```
+
+También sería interesante hacer un gráfico para ver cuáles son los metabolitos que más varían entre pacientes.
+
+```{r}
+desvest_metabolitos <- apply(assay(sumexp, "Expresion"), 1, sd)  
+
+# Ordenar los metabolitos por desviación estándar (de mayor a menor)
+desvest_metabolitos_10 <- names(sort(desvest_metabolitos, decreasing = TRUE))[1:10]  # Top 10 metabolitos más variables
+
+# Subconjunto de la matriz de expresión para los 10 metabolitos más variables
+matriz_10_desvest <- assay(sumexp, "Expresion")[desvest_metabolitos_10, ]
+
+# Convertir a formato largo (tidy)
+matriz_10_desvest_long <- melt(matriz_10_desvest)
+colnames(matriz_10_desvest_long) <- c("Metabolito", "Paciente", "Concentración")
+
+# Añadir la información de estado de los pacientes (caquexia/control)
+matriz_10_desvest_long$Estado <- as.factor(colData(sumexp)$Muscle_loss[matriz_10_desvest_long$Paciente])
+
+# Crear el boxplot para los 10 metabolitos más variables
+ggplot(matriz_10_desvest_long, aes(x = Metabolito, y = Concentración, fill = Estado)) +
+  geom_boxplot(outlier.color = "lightblue", outlier.shape = 16) +  
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) + 
+  labs(title = "Metabolitos con más variación entre pacientes", 
+       x = "Metabolito", y = "Concentración", fill = "Estado") + 
+  scale_fill_manual(values = c("control" = "lightgreen", "cachexic" = "lightpink"))  
+```
+
+```{r}
+# Guardar
+save(sumexp, file = "SummarizedExperiment_LRT.Rda")
+```
